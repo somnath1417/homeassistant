@@ -21,7 +21,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         return True
 
     client_id = conf.get("client_id")
-    # client_secret = conf.get("client_secret")
+    client_secret = conf.get("client_secret")
     redirect_uri = conf.get("redirect_uri")
 
     if not client_id or not client_secret:
@@ -29,7 +29,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         return False
 
     hass.data[DOMAIN]["client_id"] = client_id
-    # hass.data[DOMAIN]["client_secret"] = client_secret
+    hass.data[DOMAIN]["client_secret"] = client_secret
     hass.data[DOMAIN]["redirect_uri"] = redirect_uri
 
     _LOGGER.warning("BuildTrack YAML credentials loaded successfully")
@@ -41,13 +41,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     client_id = hass.data[DOMAIN].get("client_id")
-    # client_secret = hass.data[DOMAIN].get("client_secret")
+    client_secret = hass.data[DOMAIN].get("client_secret")
     access_token = entry.data.get("access_token")
-    _LOGGER.info("Somnath ==========================> :%s", access_token)
 
     refresh_token = entry.data.get("refresh_token")
 
-    if not client_id:
+    if not client_id or not client_secret:
         _LOGGER.error("BuildTrack client_id/client_secret missing in hass.data")
         return False
 
@@ -58,7 +57,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     api = BuildTrackAPI(
         hass=hass,
         client_id=client_id,
-        # client_secret=client_secret,
+        client_secret=client_secret,
         access_token=access_token,
         refresh_token=refresh_token,
     )
@@ -77,7 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "api": api,
         "devices": devices or [],
         "client_id": client_id,
-        # "client_secret": client_secret,
+        "client_secret": client_secret,
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": entry.data.get("token_type"),
@@ -101,46 +100,3 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _LOGGER.warning("BuildTrack entry unloaded: %s", entry.entry_id)
     return unload_ok
-
-
-
-"""
-from homeassistant.helpers.discovery import async_load_platform
-from .const import DOMAIN
-from .api import BuildTrackAPI
-
-PLATFORMS = ["light", "scene", "climate"]
-
-
-async def async_setup(hass, config):
-
-    conf = config.get(DOMAIN)
-
-    if conf is None:
-        return True
-    hass.data["client_id"] = conf.get("client_id")
-    hass.data["client_secret"] = conf.get("client_secret")
-    client_id = conf.get("client_id")
-    client_secret = conf.get("client_secret")
-
-    api = BuildTrackAPI(hass, client_id, client_secret)
-
-    devices = await api.call(
-        endpoint="/getDevices",
-        method="GET",
-        response_key="devices",
-    )
-
-    hass.data[DOMAIN] = {
-        "api": api,
-        "devices": devices or [],
-    }
-
-    for platform in PLATFORMS:
-        hass.async_create_task(
-            async_load_platform(hass, platform, DOMAIN, {}, config)
-        )
-
-    return True
-
-"""

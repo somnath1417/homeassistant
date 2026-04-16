@@ -21,14 +21,16 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         return True
 
     client_id = conf.get("client_id")
-    client_secret = conf.get("client_secret")
+    # client_secret = conf.get("client_secret")
+    redirect_uri = conf.get("redirect_uri")
 
     if not client_id or not client_secret:
         _LOGGER.error("BuildTrack client_id/client_secret missing in configuration.yaml")
         return False
 
     hass.data[DOMAIN]["client_id"] = client_id
-    hass.data[DOMAIN]["client_secret"] = client_secret
+    # hass.data[DOMAIN]["client_secret"] = client_secret
+    hass.data[DOMAIN]["redirect_uri"] = redirect_uri
 
     _LOGGER.warning("BuildTrack YAML credentials loaded successfully")
     return True
@@ -39,13 +41,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     client_id = hass.data[DOMAIN].get("client_id")
-    client_secret = hass.data[DOMAIN].get("client_secret")
+    # client_secret = hass.data[DOMAIN].get("client_secret")
     access_token = entry.data.get("access_token")
     _LOGGER.info("Somnath ==========================> :%s", access_token)
 
     refresh_token = entry.data.get("refresh_token")
 
-    if not client_id or not client_secret:
+    if not client_id:
         _LOGGER.error("BuildTrack client_id/client_secret missing in hass.data")
         return False
 
@@ -56,7 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     api = BuildTrackAPI(
         hass=hass,
         client_id=client_id,
-        client_secret=client_secret,
+        # client_secret=client_secret,
         access_token=access_token,
         refresh_token=refresh_token,
     )
@@ -75,7 +77,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "api": api,
         "devices": devices or [],
         "client_id": client_id,
-        "client_secret": client_secret,
+        # "client_secret": client_secret,
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": entry.data.get("token_type"),

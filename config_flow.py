@@ -62,6 +62,7 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         domain_data = self.hass.data.get(DOMAIN, {})
         client_id = domain_data.get("client_id")
         client_secret = domain_data.get("client_secret")
+	redirect_uri = domain_data.get("redirect_uri")
 
         if not client_id or not client_secret:
             _LOGGER.error("BuildTrack client_id/client_secret not found in hass.data[DOMAIN]")
@@ -73,7 +74,7 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.warning("BuildTrack callback view registered")
 
         state = self.flow_id
-        redirect_uri = "http://192.168.4.31:8123/api/buildtrack/oauth/callback"
+	redirect_uri = domain_data.get("redirect_uri")
 
         self.context["oauth_state"] = state
         self.context["redirect_uri"] = redirect_uri

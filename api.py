@@ -7,10 +7,11 @@ _LOGGER = logging.getLogger(__name__)
 
 class BuildTrackAPI:
 
+    # def __init__(self, hass, client_id=None, client_secret=None, access_token=None, refresh_token=None):
     def __init__(self, hass, client_id=None, client_secret=None, access_token=None, refresh_token=None):
         self._hass = hass
         self._client_id = client_id
-        self._client_secret = client_secret
+        # self._client_secret = client_secret
         self._base_url = API_BASE_URL
 
         self._access_token = access_token

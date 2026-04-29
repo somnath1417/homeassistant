@@ -12,47 +12,46 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Load BuildTrack YAML config."""
+    """Set up BuildTrack integration.
+
+    YAML credentials are not used now.
+    Credentials come from config_flow form.
+    """
     hass.data.setdefault(DOMAIN, {})
-
-    conf = config.get(DOMAIN)
-    if conf is None:
-        _LOGGER.warning("BuildTrack YAML config not found")
-        return True
-
-    client_id = conf.get("client_id")
-    client_secret = conf.get("client_secret")
-    redirect_uri = conf.get("redirect_uri")
-
-    if not client_id or not client_secret:
-        _LOGGER.error("BuildTrack client_id/client_secret missing in configuration.yaml")
-        return False
-
-    hass.data[DOMAIN]["client_id"] = client_id
-    hass.data[DOMAIN]["client_secret"] = client_secret
-    hass.data[DOMAIN]["redirect_uri"] = redirect_uri
-
-    _LOGGER.warning("BuildTrack YAML credentials loaded successfully")
+    _LOGGER.warning("BuildTrack async_setup loaded")
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BuildTrack from config entry."""
+
+    _LOGGER.warning("===== BuildTrack async_setup_entry started =====")
+
     hass.data.setdefault(DOMAIN, {})
 
-    client_id = hass.data[DOMAIN].get("client_id")
-    client_secret = hass.data[DOMAIN].get("client_secret")
-    access_token = entry.data.get("access_token")
+    username = entry.data.get("username")
+    password = entry.data.get("password")
+    client_id = entry.data.get("client_id")
+    client_secret = entry.data.get("client_secret")
+    redirect_uri = entry.data.get("redirect_uri")
 
+    access_token = entry.data.get("access_token")
     refresh_token = entry.data.get("refresh_token")
+    token_type = entry.data.get("token_type")
+    expires_in = entry.data.get("expires_in")
+    scope = entry.data.get("scope")
 
     if not client_id or not client_secret:
-        _LOGGER.error("BuildTrack client_id/client_secret missing in hass.data")
+        _LOGGER.error("BuildTrack client_id/client_secret missing in config entry")
         return False
 
     if not access_token:
         _LOGGER.error("BuildTrack access_token missing in config entry")
         return False
+
+    _LOGGER.warning("BuildTrack credentials loaded from config entry")
+    _LOGGER.warning("BuildTrack redirect_uri: %s", redirect_uri)
+    _LOGGER.warning("BuildTrack access_token available: %s", bool(access_token))
 
     api = BuildTrackAPI(
         hass=hass,
@@ -75,28 +74,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = {
         "api": api,
         "devices": devices or [],
+        "username": username,
+        "password": password,
         "client_id": client_id,
         "client_secret": client_secret,
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "token_type": entry.data.get("token_type"),
-        "expires_in": entry.data.get("expires_in"),
-        "redirect_uri": entry.data.get("redirect_uri"),
-        "scope": entry.data.get("scope"),
+        "token_type": token_type,
+        "expires_in": expires_in,
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+        "entry": entry,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    _LOGGER.warning("BuildTrack entry setup completed: %s", entry.entry_id)
+    _LOGGER.warning(
+        "BuildTrack entry setup completed: %s, devices=%s",
+        entry.entry_id,
+        len(devices or []),
+    )
+
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload BuildTrack config entry."""
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    if unload_ok and DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
-        hass.data[DOMAIN].pop(entry.entry_id)
+    if unload_ok:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
 
     _LOGGER.warning("BuildTrack entry unloaded: %s", entry.entry_id)
+
     return unload_ok

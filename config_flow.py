@@ -1,15 +1,22 @@
 import logging
 from urllib.parse import urlencode
 
+import voluptuous as vol
 from aiohttp import web
 
 from homeassistant import config_entries
 from homeassistant.components.http import HomeAssistantView
+from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.network import get_url, NoURLAvailableError
 
 from .const import AUTHORIZE_URL, DOMAIN, SCOPE, TOKEN_URL
 
 _LOGGER = logging.getLogger(__name__)
+
+CONF_CLIENT_ID = "client_id"
+CONF_CLIENT_SECRET = "client_secret"
+CONF_REDIRECT_URI = "redirect_uri"
 
 
 class BuildTrackOAuthCallbackView(HomeAssistantView):
@@ -18,8 +25,6 @@ class BuildTrackOAuthCallbackView(HomeAssistantView):
     name = "api:buildtrack:oauth:callback"
 
     async def get(self, request: web.Request) -> web.Response:
-        """Handle OAuth callback from BuildTrack."""
-
         hass = request.app["hass"]
 
         code = request.query.get("code")
@@ -28,7 +33,7 @@ class BuildTrackOAuthCallbackView(HomeAssistantView):
 
         _LOGGER.warning(
             "BuildTrack callback received: code=%s state=%s error=%s",
-            code,
+            bool(code),
             state,
             error,
         )
@@ -55,40 +60,65 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
-        """Start BuildTrack OAuth flow."""
+        errors = {}
 
-        _LOGGER.warning("===== BuildTrack Config Flow Started =====")
-
-        domain_data = self.hass.data.get(DOMAIN, {})
-        client_id = domain_data.get("client_id")
-        client_secret = domain_data.get("client_secret")
-	redirect_uri = domain_data.get("redirect_uri")
-
-        if not client_id or not client_secret:
-            _LOGGER.error("BuildTrack client_id/client_secret not found in hass.data[DOMAIN]")
-            return self.async_abort(reason="missing_credentials")
+        if user_input is None:
+            return self.async_show_form(
+                step_id="user",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required(CONF_USERNAME): str,
+                        vol.Required(CONF_PASSWORD): str,
+                        vol.Required(CONF_CLIENT_ID): str,
+                        vol.Required(CONF_CLIENT_SECRET): str,
+                    }
+                ),
+                errors=errors,
+            )
 
         if not self.hass.data.get(f"{DOMAIN}_callback_registered"):
             self.hass.http.register_view(BuildTrackOAuthCallbackView)
             self.hass.data[f"{DOMAIN}_callback_registered"] = True
-            _LOGGER.warning("BuildTrack callback view registered")
+
+        try:
+            base_url = get_url(self.hass, prefer_external=False)
+        except NoURLAvailableError:
+            errors["base"] = "ha_url_not_found"
+            return self.async_show_form(
+                step_id="user",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required(CONF_USERNAME, default=user_input.get(CONF_USERNAME, "")): str,
+                        vol.Required(CONF_PASSWORD): str,
+                        vol.Required(CONF_CLIENT_ID, default=user_input.get(CONF_CLIENT_ID, "")): str,
+                        vol.Required(CONF_CLIENT_SECRET): str,
+                    }
+                ),
+                errors=errors,
+            )
+
+        redirect_uri = f"{base_url.rstrip('/')}/api/buildtrack/oauth/callback"
 
         state = self.flow_id
-	redirect_uri = domain_data.get("redirect_uri")
 
         self.context["oauth_state"] = state
-        self.context["redirect_uri"] = redirect_uri
-        self.context["client_id"] = client_id
+        self.context[CONF_USERNAME] = user_input[CONF_USERNAME]
+        self.context[CONF_PASSWORD] = user_input[CONF_PASSWORD]
+        self.context[CONF_CLIENT_ID] = user_input[CONF_CLIENT_ID]
+        self.context[CONF_CLIENT_SECRET] = user_input[CONF_CLIENT_SECRET]
+        self.context[CONF_REDIRECT_URI] = redirect_uri
 
         params = {
             "scope": SCOPE,
             "state": state,
-            "client_id": client_id,
+            "client_id": user_input[CONF_CLIENT_ID],
             "redirect_uri": redirect_uri,
             "response_type": "code",
         }
 
         auth_url = f"{AUTHORIZE_URL}?{urlencode(params)}"
+
+        _LOGGER.warning("BuildTrack redirect_uri: %s", redirect_uri)
         _LOGGER.warning("Generated BuildTrack authorize URL: %s", auth_url)
 
         return self.async_external_step(
@@ -97,11 +127,6 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_auth(self, user_input=None):
-        """Handle returned OAuth callback data."""
-
-        _LOGGER.warning("Returned from external BuildTrack auth step")
-        _LOGGER.warning("Auth callback user_input: %s", user_input)
-
         if not user_input:
             return self.async_abort(reason="missing_callback_data")
 
@@ -123,28 +148,32 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="state_mismatch")
 
         if not code:
-            _LOGGER.error("Authorization code missing in callback")
             return self.async_abort(reason="missing_code")
 
         self.context["auth_code"] = code
-        _LOGGER.warning("Authorization code received successfully")
 
         return self.async_external_step_done(next_step_id="auth_done")
 
     async def async_step_auth_done(self, user_input=None):
-        """Exchange code for token and create entry."""
-
-        _LOGGER.warning("Finishing BuildTrack auth flow")
-
-        client_id = self.context.get("client_id")
+        username = self.context.get(CONF_USERNAME)
+        password = self.context.get(CONF_PASSWORD)
+        client_id = self.context.get(CONF_CLIENT_ID)
+        client_secret = self.context.get(CONF_CLIENT_SECRET)
+        redirect_uri = self.context.get(CONF_REDIRECT_URI)
         code = self.context.get("auth_code")
-        redirect_uri = self.context.get("redirect_uri")
 
-        if not client_id or not code or not redirect_uri:
-            _LOGGER.error("Missing client_id/code/redirect_uri in flow context")
+        if not all([username, password, client_id, client_secret, redirect_uri, code]):
             return self.async_abort(reason="missing_callback_data")
 
-        token_data = await self._exchange_code_for_token(code, redirect_uri)
+        token_data = await self._exchange_code_for_token(
+            username=username,
+            password=password,
+            client_id=client_id,
+            client_secret=client_secret,
+            code=code,
+            redirect_uri=redirect_uri,
+        )
+
         if not token_data:
             return self.async_abort(reason="token_exchange_failed")
 
@@ -154,8 +183,11 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(
             title="BuildTrack",
             data={
-                "client_id": client_id,
-                "redirect_uri": redirect_uri,
+                CONF_USERNAME: username,
+                CONF_PASSWORD: password,
+                CONF_CLIENT_ID: client_id,
+                CONF_CLIENT_SECRET: client_secret,
+                CONF_REDIRECT_URI: redirect_uri,
                 "scope": SCOPE,
                 "access_token": token_data.get("access_token"),
                 "refresh_token": token_data.get("refresh_token"),
@@ -164,21 +196,19 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             },
         )
 
-    async def _exchange_code_for_token(self, code: str, redirect_uri: str):
-        """Exchange authorization code for access token."""
-
-        _LOGGER.warning("===== Starting token exchange =====")
-
-        domain_data = self.hass.data.get(DOMAIN, {})
-        client_id = domain_data.get("client_id")
-        client_secret = domain_data.get("client_secret")
-
-        if not client_id or not client_secret:
-            _LOGGER.error("BuildTrack client_id/client_secret missing during token exchange")
-            return None
-
+    async def _exchange_code_for_token(
+        self,
+        username: str,
+        password: str,
+        client_id: str,
+        client_secret: str,
+        code: str,
+        redirect_uri: str,
+    ):
         payload = {
             "grant_type": "authorization_code",
+            "username": username,
+            "password": password,
             "client_id": client_id,
             "client_secret": client_secret,
             "code": code,
@@ -188,11 +218,6 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json,text/plain,*/*",
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/146.0.0.0 Safari/537.36"
-            ),
         }
 
         session = async_get_clientsession(self.hass)
@@ -203,36 +228,20 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data=payload,
                 headers=headers,
             ) as response:
-                _LOGGER.warning("Token response status: %s", response.status)
-
                 response_text = await response.text()
-                _LOGGER.warning("Token raw response text: %s", response_text[:2000])
+                _LOGGER.warning("Token response status: %s", response.status)
+                _LOGGER.warning("Token raw response: %s", response_text[:1000])
 
                 if response.status != 200:
-                    _LOGGER.error("Token endpoint returned non-200 response")
                     return None
 
-                try:
-                    data = await response.json(content_type=None)
-                    _LOGGER.warning("Parsed token JSON: %s", data)
+                data = await response.json(content_type=None)
 
-                    if not data.get("access_token"):
-                        _LOGGER.error("access_token not found in token response")
-                        return None
-
-                    return data
-
-                except Exception as json_error:
-                    _LOGGER.exception(
-                        "JSON parsing error during token exchange: %s",
-                        json_error,
-                    )
+                if not data.get("access_token"):
                     return None
 
-        except Exception as token_error:
-            _LOGGER.exception(
-                "API call exception during token exchange: %s",
-                token_error,
-            )
+                return data
+
+        except Exception as err:
+            _LOGGER.exception("Token exchange failed: %s", err)
             return None
-

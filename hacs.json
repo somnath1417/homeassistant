@@ -1,0 +1,6 @@
+{
+  "name": "BuildTrack",
+  "country": "IN",
+  "render_readme": true,
+  "domains": ["light", "climate", "scene"]
+}

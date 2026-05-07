@@ -1,10 +1,18 @@
 import logging
 
-from homeassistant.components.light import LightEntity, ColorMode
+from datetime import timedelta
+
+from homeassistant.components.light import (
+    LightEntity,
+    ColorMode,
+)
 from homeassistant.helpers.restore_state import RestoreEntity
+
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+SCAN_INTERVAL = timedelta(seconds=5)
 
 
 async def async_setup_entry(
@@ -14,17 +22,24 @@ async def async_setup_entry(
     discovery_info=None,
 ):
     """Set up BuildTrack lights."""
+
     data = hass.data[DOMAIN][entry.entry_id]
+
     devices = data["devices"]
     api = data["api"]
 
     lights = []
+
     _LOGGER.info("somnath : %s", devices)
+
     for device in devices:
+
         if "LIGHT" in device.get("type", []):
             lights.append(BuildTrackLight(hass, api, device))
+
         elif "LIGHT DIMMER" in device.get("type", []):
             lights.append(BuildTrackDimmer(hass, api, device))
+
     async_add_entities(lights)
 
 
@@ -32,6 +47,7 @@ class BuildTrackLight(LightEntity):
 
     def __init__(self, hass, api, device):
         """Initialize the light entity."""
+
         self._hass = hass
         self._api = api
         self._device = device
@@ -44,6 +60,7 @@ class BuildTrackLight(LightEntity):
 
         self._attr_supported_color_modes = {ColorMode.ONOFF}
         self._attr_color_mode = ColorMode.ONOFF
+
         self._attr_is_on = False
 
     # -------------------------------------------------
@@ -51,7 +68,6 @@ class BuildTrackLight(LightEntity):
     # -------------------------------------------------
 
     async def _async_set_power(self, state: str, is_on: bool):
-        """Internal power handler."""
 
         response = await self._api.call(
             endpoint=f"/controlDevice/{self._entity_id}",
@@ -72,7 +88,6 @@ class BuildTrackLight(LightEntity):
     # -------------------------------------------------
 
     async def async_turn_on(self, **kwargs):
-        """Turn the light on."""
         await self._async_set_power("on", True)
 
     # -------------------------------------------------
@@ -80,17 +95,49 @@ class BuildTrackLight(LightEntity):
     # -------------------------------------------------
 
     async def async_turn_off(self, **kwargs):
-        """Turn the light off."""
         await self._async_set_power("off", False)
 
+    # -------------------------------------------------
+    # REALTIME UPDATE
+    # -------------------------------------------------
+
+    async def async_update(self):
+        """Realtime state update from BuildTrack."""
+
+        data = await self._api.call(
+            endpoint="/readDeviceData",
+            method="POST",
+            payload={
+                "entityId": self._entity_id,
+                "entityKey": self._entity_key,
+            },
+        )
+
+        _LOGGER.warning(
+            "Realtime Light Data | %s | %s",
+            self._attr_name,
+            data,
+        )
+
+        if not data:
+            return
+
+        state = str(data.get("state", "")).lower()
+
+        self._attr_is_on = state == "on"
+
+        self.async_write_ha_state()
 
 
 class BuildTrackDimmer(LightEntity, RestoreEntity):
 
     def __init__(self, hass, api, device):
-        self._api = api
 
-        self._entity_id = device.get("entityId")   # REQUIRED for endpoint
+        self._hass = hass
+        self._api = api
+        self._device = device
+
+        self._entity_id = device.get("entityId")
         self._entity_key = device.get("entityKey")
 
         self._attr_name = device.get("entityName")
@@ -105,6 +152,7 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
     # -------------------------------------------------
     # REQUIRED PROPERTIES
     # -------------------------------------------------
+
     @property
     def is_on(self):
         return self._attr_is_on
@@ -120,10 +168,13 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
     # -------------------------------------------------
     # RESTORE STATE
     # -------------------------------------------------
+
     async def async_added_to_hass(self):
+
         last_state = await self.async_get_last_state()
 
         if last_state:
+
             self._attr_is_on = last_state.state == "on"
 
             if "brightness" in last_state.attributes:
@@ -132,7 +183,12 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
     # -------------------------------------------------
     # INTERNAL CONTROL FUNCTION
     # -------------------------------------------------
-    async def _async_set_power(self, state: str, brightness_percent: int):
+
+    async def _async_set_power(
+        self,
+        state: str,
+        brightness_percent: int,
+    ):
 
         response = await self._api.call(
             endpoint=f"/controlDevice/{self._entity_id}",
@@ -141,7 +197,7 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
                 "entityId": self._entity_id,
                 "entityKey": self._entity_key,
                 "state": state,
-                "speed": brightness_percent,  # add brightness for dimmer
+                "speed": brightness_percent,
             },
         )
 
@@ -152,6 +208,7 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
     # -------------------------------------------------
     # TURN ON
     # -------------------------------------------------
+
     async def async_turn_on(self, **kwargs):
 
         brightness = kwargs.get("brightness")
@@ -160,15 +217,62 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
             self._attr_brightness = brightness
 
         if self._attr_brightness is None:
-            self._attr_brightness = 255  # default full brightness
+            self._attr_brightness = 255
 
-        brightness_percent = int((self._attr_brightness / 255) * 100)
+        brightness_percent = int(
+            (self._attr_brightness / 255) * 100
+        )
 
-        await self._async_set_power("on", brightness_percent)
+        await self._async_set_power(
+            "on",
+            brightness_percent,
+        )
 
     # -------------------------------------------------
     # TURN OFF
     # -------------------------------------------------
+
     async def async_turn_off(self, **kwargs):
 
         await self._async_set_power("off", 0)
+
+    # -------------------------------------------------
+    # REALTIME UPDATE
+    # -------------------------------------------------
+
+    async def async_update(self):
+        """Realtime dimmer update from BuildTrack."""
+
+        data = await self._api.call(
+            endpoint="/readDeviceData",
+            method="POST",
+            payload={
+                "entityId": self._entity_id,
+                "entityKey": self._entity_key,
+            },
+        )
+
+        _LOGGER.warning(
+            "Realtime Dimmer Data | %s | %s",
+            self._attr_name,
+            data,
+        )
+
+        if not data:
+            return
+
+        state = str(data.get("state", "")).lower()
+
+        self._attr_is_on = state == "on"
+
+        speed = data.get("speed") or data.get("brightness")
+
+        if speed is not None:
+            try:
+                self._attr_brightness = int(
+                    (int(speed) / 100) * 255
+                )
+            except Exception:
+                pass
+
+        self.async_write_ha_state()

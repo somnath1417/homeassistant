@@ -302,3 +302,4 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
                 pass
 
         self.async_write_ha_state()
+        

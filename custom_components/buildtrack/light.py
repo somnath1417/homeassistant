@@ -231,6 +231,95 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
             self.async_write_ha_state()
 
     async def async_update(self):
+    """Realtime dimmer update from BuildTrack."""
+
+    # Skip immediate polling after local HA change
+    if self._last_local_change:
+        diff = (datetime.now() - self._last_local_change).total_seconds()
+
+        if diff < 3:
+            return
+
+    data = await self._api.call(
+        endpoint="/readDeviceData",
+        method="POST",
+        payload={
+            "entityId": self._entity_id,
+            "entityKey": self._entity_key,
+        },
+    )
+
+    _LOGGER.warning(
+        "Realtime Dimmer Data | %s | %s",
+        self._attr_name,
+        data,
+    )
+
+    if not data:
+        return
+
+    # -------------------------------------------------
+    # GET SPEED VALUE
+    # -------------------------------------------------
+
+    speed = (
+        data.get("speed")
+        or data.get("brightness")
+        or data.get("level")
+        or data.get("value")
+    )
+
+    # -------------------------------------------------
+    # UPDATE BRIGHTNESS
+    # -------------------------------------------------
+
+    if speed is not None:
+        try:
+            speed_int = int(float(speed))
+
+            # clamp
+            speed_int = max(0, min(speed_int, 100))
+
+            # update brightness
+            self._attr_brightness = int(
+                (speed_int / 100) * 255
+            )
+
+            # auto ON/OFF based on brightness
+            self._attr_is_on = speed_int > 0
+
+            _LOGGER.warning(
+                "Dimmer realtime brightness update | %s | speed=%s | brightness=%s",
+                self._attr_name,
+                speed_int,
+                self._attr_brightness,
+            )
+
+        except Exception as err:
+            _LOGGER.warning(
+                "Dimmer speed parse error | %s | %s",
+                self._attr_name,
+                err,
+            )
+
+    # -------------------------------------------------
+    # HANDLE EXPLICIT STATE
+    # -------------------------------------------------
+
+    state = str(
+        data.get("state", "")
+    ).lower()
+
+    if state in ["on", "1", "true"]:
+        self._attr_is_on = True
+
+    elif state in ["off", "0", "false"]:
+
+        # only OFF if brightness also 0
+        if self._attr_brightness <= 0:
+            self._attr_is_on = False
+
+    self.async_write_ha_state()
         if self._last_local_change:
             diff = (datetime.now() - self._last_local_change).total_seconds()
             if diff < 3:

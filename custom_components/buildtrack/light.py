@@ -33,11 +33,11 @@ async def async_setup_entry(
     _LOGGER.info("BuildTrack Devices : %s", devices)
 
     for device in devices:
-        if "LIGHT" in device.get("type", []):
-            lights.append(BuildTrackLight(hass, api, device))
-
-        elif "LIGHT DIMMER" in device.get("type", []):
+        if "LIGHT DIMMER" in device.get("type", []):
             lights.append(BuildTrackDimmer(hass, api, device))
+
+        elif "LIGHT" in device.get("type", []):
+            lights.append(BuildTrackLight(hass, api, device))
 
     async_add_entities(lights)
 
@@ -68,8 +68,6 @@ class BuildTrackLight(LightEntity):
         self._instant_set_power("off", False)
 
     def _instant_set_power(self, state: str, is_on: bool):
-        """Instant HA update, API runs in background."""
-
         old_state = self._attr_is_on
 
         self._attr_is_on = is_on
@@ -96,8 +94,6 @@ class BuildTrackLight(LightEntity):
             self.async_write_ha_state()
 
     async def async_update(self):
-        """Realtime state update from BuildTrack."""
-
         if self._last_local_change:
             diff = (datetime.now() - self._last_local_change).total_seconds()
             if diff < 3:
@@ -178,7 +174,7 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
         if brightness is not None:
             self._attr_brightness = brightness
 
-        if self._attr_brightness is None:
+        if self._attr_brightness is None or self._attr_brightness <= 0:
             self._attr_brightness = 255
 
         brightness_percent = int((self._attr_brightness / 255) * 100)
@@ -189,8 +185,6 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
         self._instant_set_power("off", 0)
 
     def _instant_set_power(self, state: str, brightness_percent: int):
-        """Instant HA update, API runs in background."""
-
         old_state = self._attr_is_on
         old_brightness = self._attr_brightness
 
@@ -237,8 +231,6 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
             self.async_write_ha_state()
 
     async def async_update(self):
-        """Realtime dimmer update from BuildTrack."""
-
         if self._last_local_change:
             diff = (datetime.now() - self._last_local_change).total_seconds()
             if diff < 3:
@@ -264,17 +256,41 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
 
         state = str(data.get("state", "")).lower()
 
-        if state in ["on", "1", "true"]:
-            self._attr_is_on = True
-        elif state in ["off", "0", "false"]:
-            self._attr_is_on = False
-
-        speed = data.get("speed") or data.get("brightness")
+        speed = (
+            data.get("speed")
+            or data.get("brightness")
+            or data.get("level")
+            or data.get("value")
+        )
 
         if speed is not None:
             try:
-                self._attr_brightness = int((int(speed) / 100) * 255)
-            except Exception:
-                pass
+                speed_int = int(float(speed))
+
+                if speed_int < 0:
+                    speed_int = 0
+
+                if speed_int > 100:
+                    speed_int = 100
+
+                self._attr_brightness = int((speed_int / 100) * 255)
+
+                if speed_int > 0:
+                    self._attr_is_on = True
+                else:
+                    self._attr_is_on = False
+
+            except Exception as err:
+                _LOGGER.warning(
+                    "Invalid dimmer speed value | %s | %s",
+                    self._attr_name,
+                    err,
+                )
+
+        if state in ["on", "1", "true"]:
+            self._attr_is_on = True
+
+        elif state in ["off", "0", "false"]:
+            self._attr_is_on = False
 
         self.async_write_ha_state()

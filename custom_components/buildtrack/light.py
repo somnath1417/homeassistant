@@ -105,14 +105,12 @@ class BuildTrackLight(LightEntity):
 
         old_state = self._attr_is_on
 
-        # instant UI update
         self._attr_is_on = is_on
 
         self._last_local_change = datetime.now()
 
         self.async_write_ha_state()
 
-        # background API call
         self._hass.async_create_task(
             self._send_power_to_api(
                 state,
@@ -140,7 +138,6 @@ class BuildTrackLight(LightEntity):
             },
         )
 
-        # rollback if failed
         if response is None:
 
             self._attr_is_on = old_state
@@ -153,7 +150,6 @@ class BuildTrackLight(LightEntity):
 
     async def async_update(self):
 
-        # skip polling after local update
         if self._last_local_change:
 
             diff = (
@@ -402,7 +398,6 @@ class BuildTrackDimmer(
             },
         )
 
-        # rollback if failed
         if response is None:
 
             self._attr_is_on = old_state
@@ -420,7 +415,6 @@ class BuildTrackDimmer(
     async def async_update(self):
         """Realtime dimmer update."""
 
-        # skip polling after local update
         if self._last_local_change:
 
             diff = (
@@ -449,20 +443,12 @@ class BuildTrackDimmer(
         if not data:
             return
 
-        # -------------------------------------------------
-        # GET BRIGHTNESS VALUE
-        # -------------------------------------------------
-
         speed = (
             data.get("speed")
             or data.get("brightness")
             or data.get("level")
             or data.get("value")
         )
-
-        # -------------------------------------------------
-        # UPDATE BRIGHTNESS + STATE
-        # -------------------------------------------------
 
         if speed is not None:
 
@@ -472,13 +458,11 @@ class BuildTrackDimmer(
                     float(speed)
                 )
 
-                # clamp
                 speed_int = max(
                     0,
                     min(speed_int, 100),
                 )
 
-                # update brightness
                 self._attr_brightness = int(
                     (
                         speed_int
@@ -486,7 +470,6 @@ class BuildTrackDimmer(
                     ) * 255
                 )
 
-                # auto ON/OFF
                 self._attr_is_on = (
                     speed_int > 0
                 )
@@ -506,10 +489,6 @@ class BuildTrackDimmer(
                     err,
                 )
 
-        # -------------------------------------------------
-        # HANDLE EXPLICIT STATE
-        # -------------------------------------------------
-
         state = str(
             data.get("state", "")
         ).lower()
@@ -528,7 +507,6 @@ class BuildTrackDimmer(
             "false",
         ]:
 
-            # only OFF if brightness 0
             if self._attr_brightness <= 0:
 
                 self._attr_is_on = False

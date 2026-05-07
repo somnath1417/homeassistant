@@ -30,7 +30,7 @@ async def async_setup_entry(
 
     lights = []
 
-    _LOGGER.info("somnath : %s", devices)
+    _LOGGER.info("BuildTrack Devices : %s", devices)
 
     for device in devices:
 
@@ -68,6 +68,13 @@ class BuildTrackLight(LightEntity):
     # -------------------------------------------------
 
     async def _async_set_power(self, state: str, is_on: bool):
+        """Internal power handler with instant HA update."""
+
+        old_state = self._attr_is_on
+
+        # Instant HA update
+        self._attr_is_on = is_on
+        self.async_write_ha_state()
 
         response = await self._api.call(
             endpoint=f"/controlDevice/{self._entity_id}",
@@ -79,8 +86,9 @@ class BuildTrackLight(LightEntity):
             },
         )
 
-        if response is not None:
-            self._attr_is_on = is_on
+        # Rollback if API fails
+        if response is None:
+            self._attr_is_on = old_state
             self.async_write_ha_state()
 
     # -------------------------------------------------
@@ -189,6 +197,22 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
         state: str,
         brightness_percent: int,
     ):
+        """Internal dimmer handler with instant HA update."""
+
+        old_state = self._attr_is_on
+        old_brightness = self._attr_brightness
+
+        # Instant HA update
+        self._attr_is_on = state.lower() == "on"
+
+        if state.lower() == "off":
+            self._attr_brightness = 0
+        else:
+            self._attr_brightness = int(
+                (brightness_percent / 100) * 255
+            )
+
+        self.async_write_ha_state()
 
         response = await self._api.call(
             endpoint=f"/controlDevice/{self._entity_id}",
@@ -201,8 +225,10 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
             },
         )
 
-        if response is not None:
-            self._attr_is_on = state.lower() == "on"
+        # Rollback if API fails
+        if response is None:
+            self._attr_is_on = old_state
+            self._attr_brightness = old_brightness
             self.async_write_ha_state()
 
     # -------------------------------------------------

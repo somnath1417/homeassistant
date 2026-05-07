@@ -192,14 +192,12 @@ class BuildTrackLight(LightEntity):
         self.async_write_ha_state()
 
 
-# =====================================================
-# DIMMER LIGHT
-# =====================================================
-
 class BuildTrackDimmer(
     LightEntity,
     RestoreEntity,
 ):
+
+    should_poll = True
 
     def __init__(
         self,
@@ -227,9 +225,10 @@ class BuildTrackDimmer(
             ColorMode.BRIGHTNESS
         )
 
-        self._attr_is_on = False
+        self._is_on = False
 
-        self._attr_brightness = 128
+        # NEVER None
+        self._brightness = 255
 
         self._last_local_change = None
 
@@ -240,12 +239,12 @@ class BuildTrackDimmer(
     @property
     def is_on(self):
 
-        return self._attr_is_on
+        return self._is_on
 
     @property
     def brightness(self):
 
-        return self._attr_brightness
+        return self._brightness
 
     @property
     def available(self):
@@ -262,20 +261,19 @@ class BuildTrackDimmer(
 
         if last_state:
 
-            self._attr_is_on = (
+            self._is_on = (
                 last_state.state == "on"
             )
 
-            if (
-                "brightness"
-                in last_state.attributes
-            ):
-
-                self._attr_brightness = (
-                    last_state.attributes[
-                        "brightness"
-                    ]
+            brightness = (
+                last_state.attributes.get(
+                    "brightness"
                 )
+            )
+
+            # PROTECTION
+            if brightness is not None:
+                self._brightness = brightness
 
     # -------------------------------------------------
     # TURN ON
@@ -291,26 +289,38 @@ class BuildTrackDimmer(
         )
 
         if brightness is not None:
+            self._brightness = brightness
 
-            self._attr_brightness = brightness
-
+        # PROTECTION
         if (
-            self._attr_brightness is None
-            or self._attr_brightness <= 0
+            self._brightness is None
+            or self._brightness <= 0
         ):
-
-            self._attr_brightness = 255
+            self._brightness = 255
 
         brightness_percent = int(
-            (
-                self._attr_brightness
-                / 255
-            ) * 100
+            (self._brightness / 255) * 100
         )
 
-        self._instant_set_power(
-            "on",
-            brightness_percent,
+        self._is_on = True
+
+        self.async_write_ha_state()
+
+        self._last_local_change = (
+            datetime.now()
+        )
+
+        self._hass.async_create_task(
+            self._api.call(
+                endpoint=f"/controlDevice/{self._entity_id}",
+                method="POST",
+                payload={
+                    "entityId": self._entity_id,
+                    "entityKey": self._entity_key,
+                    "state": "on",
+                    "speed": brightness_percent,
+                },
+            )
         )
 
     # -------------------------------------------------
@@ -322,101 +332,34 @@ class BuildTrackDimmer(
         **kwargs,
     ):
 
-        self._instant_set_power(
-            "off",
-            0,
-        )
+        self._is_on = False
+        self._brightness = 0
 
-    # -------------------------------------------------
-    # INSTANT LOCAL UPDATE
-    # -------------------------------------------------
-
-    def _instant_set_power(
-        self,
-        state: str,
-        brightness_percent: int,
-    ):
-
-        old_state = self._attr_is_on
-
-        old_brightness = (
-            self._attr_brightness
-        )
-
-        self._attr_is_on = (
-            state.lower() == "on"
-        )
-
-        if state.lower() == "off":
-
-            self._attr_brightness = 0
-
-        else:
-
-            self._attr_brightness = int(
-                (
-                    brightness_percent
-                    / 100
-                ) * 255
-            )
+        self.async_write_ha_state()
 
         self._last_local_change = (
             datetime.now()
         )
 
-        self.async_write_ha_state()
-
         self._hass.async_create_task(
-            self._send_power_to_api(
-                state,
-                brightness_percent,
-                old_state,
-                old_brightness,
+            self._api.call(
+                endpoint=f"/controlDevice/{self._entity_id}",
+                method="POST",
+                payload={
+                    "entityId": self._entity_id,
+                    "entityKey": self._entity_key,
+                    "state": "off",
+                    "speed": 0,
+                },
             )
         )
-
-    # -------------------------------------------------
-    # BACKGROUND API
-    # -------------------------------------------------
-
-    async def _send_power_to_api(
-        self,
-        state: str,
-        brightness_percent: int,
-        old_state: bool,
-        old_brightness: int,
-    ):
-
-        response = await self._api.call(
-            endpoint=f"/controlDevice/{self._entity_id}",
-            method="POST",
-            payload={
-                "entityId": self._entity_id,
-                "entityKey": self._entity_key,
-                "state": state,
-                "speed": brightness_percent,
-            },
-        )
-
-        # rollback if failed
-        if response is None:
-
-            self._attr_is_on = old_state
-
-            self._attr_brightness = (
-                old_brightness
-            )
-
-            self.async_write_ha_state()
 
     # -------------------------------------------------
     # REALTIME UPDATE
     # -------------------------------------------------
 
     async def async_update(self):
-        """Realtime dimmer update."""
 
-        # Skip polling after local HA update
         if self._last_local_change:
 
             diff = (
@@ -437,22 +380,12 @@ class BuildTrackDimmer(
         )
 
         _LOGGER.warning(
-            "Realtime Dimmer RAW Data | %s | %s",
-            self._attr_name,
+            "DIMMER REALTIME DATA = %s",
             data,
         )
 
         if not data:
             return
-
-        # -------------------------------------------------
-        # RESPONSE FORMAT
-        # {
-        #   "entityKey": "...",
-        #   "state": "on",
-        #   "speed": "60"
-        # }
-        # -------------------------------------------------
 
         state = str(
             data.get("state", "")
@@ -461,53 +394,37 @@ class BuildTrackDimmer(
         speed = data.get("speed")
 
         # -------------------------------------------------
-        # UPDATE BRIGHTNESS
+        # BRIGHTNESS
         # -------------------------------------------------
 
         if speed is not None:
 
             try:
 
-                speed_int = int(
-                    float(speed)
-                )
+                speed_int = int(speed)
 
-                # clamp 0-100
                 speed_int = max(
                     0,
                     min(speed_int, 100),
                 )
 
-                # update brightness
-                self._attr_brightness = int(
-                    (
-                        speed_int
-                        / 100
-                    ) * 255
+                self._brightness = int(
+                    (speed_int / 100) * 255
                 )
 
-                _LOGGER.warning(
-                    "Realtime Brightness Updated | %s | speed=%s | brightness=%s",
-                    self._attr_name,
-                    speed_int,
-                    self._attr_brightness,
-                )
-
-                # auto ON/OFF from speed
-                self._attr_is_on = (
+                self._is_on = (
                     speed_int > 0
                 )
 
             except Exception as err:
 
                 _LOGGER.warning(
-                    "Brightness Parse Error | %s | %s",
-                    self._attr_name,
+                    "DIMMER SPEED ERROR = %s",
                     err,
                 )
 
         # -------------------------------------------------
-        # HANDLE EXPLICIT STATE
+        # EXPLICIT STATE
         # -------------------------------------------------
 
         if state in [
@@ -516,7 +433,7 @@ class BuildTrackDimmer(
             "true",
         ]:
 
-            self._attr_is_on = True
+            self._is_on = True
 
         elif state in [
             "off",
@@ -524,17 +441,19 @@ class BuildTrackDimmer(
             "false",
         ]:
 
-            if (
-                self._attr_brightness <= 0
-            ):
+            self._is_on = False
 
-                self._attr_is_on = False
+            # PROTECTION
+            if (
+                self._brightness is not None
+                and self._brightness > 0
+            ):
+                self._brightness = 0
 
         _LOGGER.warning(
-            "Final Dimmer State | %s | is_on=%s | brightness=%s",
-            self._attr_name,
-            self._attr_is_on,
-            self._attr_brightness,
+            "FINAL DIMMER | is_on=%s | brightness=%s",
+            self._is_on,
+            self._brightness,
         )
 
         self.async_write_ha_state()

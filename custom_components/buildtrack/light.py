@@ -1,6 +1,6 @@
 import logging
 
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from homeassistant.components.light import (
     LightEntity,
@@ -33,7 +33,6 @@ async def async_setup_entry(
     _LOGGER.info("BuildTrack Devices : %s", devices)
 
     for device in devices:
-
         if "LIGHT" in device.get("type", []):
             lights.append(BuildTrackLight(hass, api, device))
 
@@ -46,8 +45,6 @@ async def async_setup_entry(
 class BuildTrackLight(LightEntity):
 
     def __init__(self, hass, api, device):
-        """Initialize the light entity."""
-
         self._hass = hass
         self._api = api
         self._device = device
@@ -62,20 +59,28 @@ class BuildTrackLight(LightEntity):
         self._attr_color_mode = ColorMode.ONOFF
 
         self._attr_is_on = False
+        self._last_local_change = None
 
-    # -------------------------------------------------
-    # INTERNAL POWER HANDLER
-    # -------------------------------------------------
+    async def async_turn_on(self, **kwargs):
+        self._instant_set_power("on", True)
 
-    async def _async_set_power(self, state: str, is_on: bool):
-        """Internal power handler with instant HA update."""
+    async def async_turn_off(self, **kwargs):
+        self._instant_set_power("off", False)
+
+    def _instant_set_power(self, state: str, is_on: bool):
+        """Instant HA update, API runs in background."""
 
         old_state = self._attr_is_on
 
-        # Instant HA update
         self._attr_is_on = is_on
+        self._last_local_change = datetime.now()
         self.async_write_ha_state()
 
+        self._hass.async_create_task(
+            self._send_power_to_api(state, old_state)
+        )
+
+    async def _send_power_to_api(self, state: str, old_state: bool):
         response = await self._api.call(
             endpoint=f"/controlDevice/{self._entity_id}",
             method="POST",
@@ -86,31 +91,17 @@ class BuildTrackLight(LightEntity):
             },
         )
 
-        # Rollback if API fails
         if response is None:
             self._attr_is_on = old_state
             self.async_write_ha_state()
 
-    # -------------------------------------------------
-    # TURN ON
-    # -------------------------------------------------
-
-    async def async_turn_on(self, **kwargs):
-        await self._async_set_power("on", True)
-
-    # -------------------------------------------------
-    # TURN OFF
-    # -------------------------------------------------
-
-    async def async_turn_off(self, **kwargs):
-        await self._async_set_power("off", False)
-
-    # -------------------------------------------------
-    # REALTIME UPDATE
-    # -------------------------------------------------
-
     async def async_update(self):
         """Realtime state update from BuildTrack."""
+
+        if self._last_local_change:
+            diff = (datetime.now() - self._last_local_change).total_seconds()
+            if diff < 3:
+                return
 
         data = await self._api.call(
             endpoint="/readDeviceData",
@@ -132,7 +123,10 @@ class BuildTrackLight(LightEntity):
 
         state = str(data.get("state", "")).lower()
 
-        self._attr_is_on = state == "on"
+        if state in ["on", "1", "true"]:
+            self._attr_is_on = True
+        elif state in ["off", "0", "false"]:
+            self._attr_is_on = False
 
         self.async_write_ha_state()
 
@@ -140,7 +134,6 @@ class BuildTrackLight(LightEntity):
 class BuildTrackDimmer(LightEntity, RestoreEntity):
 
     def __init__(self, hass, api, device):
-
         self._hass = hass
         self._api = api
         self._device = device
@@ -156,10 +149,7 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
 
         self._attr_is_on = False
         self._attr_brightness = 128
-
-    # -------------------------------------------------
-    # REQUIRED PROPERTIES
-    # -------------------------------------------------
+        self._last_local_change = None
 
     @property
     def is_on(self):
@@ -173,47 +163,63 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
     def available(self):
         return True
 
-    # -------------------------------------------------
-    # RESTORE STATE
-    # -------------------------------------------------
-
     async def async_added_to_hass(self):
-
         last_state = await self.async_get_last_state()
 
         if last_state:
-
             self._attr_is_on = last_state.state == "on"
 
             if "brightness" in last_state.attributes:
                 self._attr_brightness = last_state.attributes["brightness"]
 
-    # -------------------------------------------------
-    # INTERNAL CONTROL FUNCTION
-    # -------------------------------------------------
+    async def async_turn_on(self, **kwargs):
+        brightness = kwargs.get("brightness")
 
-    async def _async_set_power(
-        self,
-        state: str,
-        brightness_percent: int,
-    ):
-        """Internal dimmer handler with instant HA update."""
+        if brightness is not None:
+            self._attr_brightness = brightness
+
+        if self._attr_brightness is None:
+            self._attr_brightness = 255
+
+        brightness_percent = int((self._attr_brightness / 255) * 100)
+
+        self._instant_set_power("on", brightness_percent)
+
+    async def async_turn_off(self, **kwargs):
+        self._instant_set_power("off", 0)
+
+    def _instant_set_power(self, state: str, brightness_percent: int):
+        """Instant HA update, API runs in background."""
 
         old_state = self._attr_is_on
         old_brightness = self._attr_brightness
 
-        # Instant HA update
         self._attr_is_on = state.lower() == "on"
 
         if state.lower() == "off":
             self._attr_brightness = 0
         else:
-            self._attr_brightness = int(
-                (brightness_percent / 100) * 255
-            )
+            self._attr_brightness = int((brightness_percent / 100) * 255)
 
+        self._last_local_change = datetime.now()
         self.async_write_ha_state()
 
+        self._hass.async_create_task(
+            self._send_power_to_api(
+                state,
+                brightness_percent,
+                old_state,
+                old_brightness,
+            )
+        )
+
+    async def _send_power_to_api(
+        self,
+        state: str,
+        brightness_percent: int,
+        old_state: bool,
+        old_brightness: int,
+    ):
         response = await self._api.call(
             endpoint=f"/controlDevice/{self._entity_id}",
             method="POST",
@@ -225,49 +231,18 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
             },
         )
 
-        # Rollback if API fails
         if response is None:
             self._attr_is_on = old_state
             self._attr_brightness = old_brightness
             self.async_write_ha_state()
 
-    # -------------------------------------------------
-    # TURN ON
-    # -------------------------------------------------
-
-    async def async_turn_on(self, **kwargs):
-
-        brightness = kwargs.get("brightness")
-
-        if brightness is not None:
-            self._attr_brightness = brightness
-
-        if self._attr_brightness is None:
-            self._attr_brightness = 255
-
-        brightness_percent = int(
-            (self._attr_brightness / 255) * 100
-        )
-
-        await self._async_set_power(
-            "on",
-            brightness_percent,
-        )
-
-    # -------------------------------------------------
-    # TURN OFF
-    # -------------------------------------------------
-
-    async def async_turn_off(self, **kwargs):
-
-        await self._async_set_power("off", 0)
-
-    # -------------------------------------------------
-    # REALTIME UPDATE
-    # -------------------------------------------------
-
     async def async_update(self):
         """Realtime dimmer update from BuildTrack."""
+
+        if self._last_local_change:
+            diff = (datetime.now() - self._last_local_change).total_seconds()
+            if diff < 3:
+                return
 
         data = await self._api.call(
             endpoint="/readDeviceData",
@@ -289,17 +264,17 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
 
         state = str(data.get("state", "")).lower()
 
-        self._attr_is_on = state == "on"
+        if state in ["on", "1", "true"]:
+            self._attr_is_on = True
+        elif state in ["off", "0", "false"]:
+            self._attr_is_on = False
 
         speed = data.get("speed") or data.get("brightness")
 
         if speed is not None:
             try:
-                self._attr_brightness = int(
-                    (int(speed) / 100) * 255
-                )
+                self._attr_brightness = int((int(speed) / 100) * 255)
             except Exception:
                 pass
 
         self.async_write_ha_state()
-        

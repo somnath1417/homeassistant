@@ -6,6 +6,7 @@ from aiohttp import web
 
 from homeassistant import config_entries
 from homeassistant.components.http import HomeAssistantView
+from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import get_url, NoURLAvailableError
 
@@ -36,6 +37,49 @@ def _token_url(auth_url: str) -> str:
 
 def _authorize_url(auth_url: str) -> str:
     return f"{_clean_url(auth_url)}/index.php/oauthtokenservice/authorize"
+
+
+def _build_user_schema(user_input=None):
+    user_input = user_input or {}
+
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_API_URL,
+                default=user_input.get(CONF_API_URL, ""),
+            ): str,
+            vol.Required(
+                CONF_AUTH_URL,
+                default=user_input.get(CONF_AUTH_URL, ""),
+            ): str,
+            vol.Required(
+                CONF_CLIENT_ID,
+                default=user_input.get(CONF_CLIENT_ID, ""),
+            ): str,
+            vol.Required(
+                CONF_CLIENT_SECRET,
+                default=user_input.get(CONF_CLIENT_SECRET, ""),
+            ): str,
+            vol.Required(
+                CONF_AUTH_TYPE,
+                default=user_input.get(CONF_AUTH_TYPE, AUTH_TYPE_CLIENT_CRED),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        {
+                            "value": AUTH_TYPE_CLIENT_CRED,
+                            "label": "Client Credentials",
+                        },
+                        {
+                            "value": AUTH_TYPE_AUTH_CODE,
+                            "label": "Authorization Code",
+                        },
+                    ],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+        }
+    )
 
 
 class BuildTrackOAuthCallbackView(HomeAssistantView):
@@ -84,31 +128,15 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is None:
             return self.async_show_form(
                 step_id="user",
-                data_schema=vol.Schema(
-                    {
-                        vol.Required(CONF_API_URL): str,
-                        vol.Required(CONF_AUTH_URL): str,
-                        vol.Required(
-                            CONF_AUTH_TYPE,
-                            default=AUTH_TYPE_CLIENT_CRED,
-                        ): vol.In(
-                            {
-                                AUTH_TYPE_CLIENT_CRED: "Client Credentials",
-                                AUTH_TYPE_AUTH_CODE: "Auth Code",
-                            }
-                        ),
-                        vol.Required(CONF_CLIENT_ID): str,
-                        vol.Required(CONF_CLIENT_SECRET): str,
-                    }
-                ),
+                data_schema=_build_user_schema(),
                 errors=errors,
             )
 
         self.context[CONF_API_URL] = _clean_url(user_input[CONF_API_URL])
         self.context[CONF_AUTH_URL] = _clean_url(user_input[CONF_AUTH_URL])
-        self.context[CONF_AUTH_TYPE] = user_input[CONF_AUTH_TYPE]
         self.context[CONF_CLIENT_ID] = user_input[CONF_CLIENT_ID]
         self.context[CONF_CLIENT_SECRET] = user_input[CONF_CLIENT_SECRET]
+        self.context[CONF_AUTH_TYPE] = user_input[CONF_AUTH_TYPE]
 
         if user_input[CONF_AUTH_TYPE] == AUTH_TYPE_AUTH_CODE:
             return await self._start_auth_code_flow()
@@ -119,35 +147,7 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors["base"] = "token_failed"
             return self.async_show_form(
                 step_id="user",
-                data_schema=vol.Schema(
-                    {
-                        vol.Required(
-                            CONF_API_URL,
-                            default=user_input.get(CONF_API_URL, ""),
-                        ): str,
-                        vol.Required(
-                            CONF_AUTH_URL,
-                            default=user_input.get(CONF_AUTH_URL, ""),
-                        ): str,
-                        vol.Required(
-                            CONF_AUTH_TYPE,
-                            default=user_input.get(
-                                CONF_AUTH_TYPE,
-                                AUTH_TYPE_CLIENT_CRED,
-                            ),
-                        ): vol.In(
-                            {
-                                AUTH_TYPE_CLIENT_CRED: "Client Credentials",
-                                AUTH_TYPE_AUTH_CODE: "Auth Code",
-                            }
-                        ),
-                        vol.Required(
-                            CONF_CLIENT_ID,
-                            default=user_input.get(CONF_CLIENT_ID, ""),
-                        ): str,
-                        vol.Required(CONF_CLIENT_SECRET): str,
-                    }
-                ),
+                data_schema=_build_user_schema(user_input),
                 errors=errors,
             )
 

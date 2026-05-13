@@ -6,17 +6,36 @@ from aiohttp import web
 
 from homeassistant import config_entries
 from homeassistant.components.http import HomeAssistantView
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import get_url, NoURLAvailableError
 
-from .const import AUTHORIZE_URL, DOMAIN, SCOPE, TOKEN_URL
+from .const import (
+    DOMAIN,
+    SCOPE,
+    CONF_API_URL,
+    CONF_AUTH_URL,
+    CONF_AUTH_TYPE,
+    CONF_CLIENT_ID,
+    CONF_CLIENT_SECRET,
+    AUTH_TYPE_AUTH_CODE,
+    AUTH_TYPE_CLIENT_CRED,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-CONF_CLIENT_ID = "client_id"
-CONF_CLIENT_SECRET = "client_secret"
 CONF_REDIRECT_URI = "redirect_uri"
+
+
+def _clean_url(url: str) -> str:
+    return url.strip().rstrip("/")
+
+
+def _token_url(auth_url: str) -> str:
+    return f"{_clean_url(auth_url)}/index.php/oauthtokenservice/token"
+
+
+def _authorize_url(auth_url: str) -> str:
+    return f"{_clean_url(auth_url)}/index.php/oauthtokenservice/authorize"
 
 
 class BuildTrackOAuthCallbackView(HomeAssistantView):
@@ -67,8 +86,17 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 step_id="user",
                 data_schema=vol.Schema(
                     {
-                        vol.Required(CONF_USERNAME): str,
-                        vol.Required(CONF_PASSWORD): str,
+                        vol.Required(CONF_API_URL): str,
+                        vol.Required(CONF_AUTH_URL): str,
+                        vol.Required(
+                            CONF_AUTH_TYPE,
+                            default=AUTH_TYPE_CLIENT_CRED,
+                        ): vol.In(
+                            {
+                                AUTH_TYPE_CLIENT_CRED: "Client Credentials",
+                                AUTH_TYPE_AUTH_CODE: "Auth Code",
+                            }
+                        ),
                         vol.Required(CONF_CLIENT_ID): str,
                         vol.Required(CONF_CLIENT_SECRET): str,
                     }
@@ -76,6 +104,56 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors=errors,
             )
 
+        self.context[CONF_API_URL] = _clean_url(user_input[CONF_API_URL])
+        self.context[CONF_AUTH_URL] = _clean_url(user_input[CONF_AUTH_URL])
+        self.context[CONF_AUTH_TYPE] = user_input[CONF_AUTH_TYPE]
+        self.context[CONF_CLIENT_ID] = user_input[CONF_CLIENT_ID]
+        self.context[CONF_CLIENT_SECRET] = user_input[CONF_CLIENT_SECRET]
+
+        if user_input[CONF_AUTH_TYPE] == AUTH_TYPE_AUTH_CODE:
+            return await self._start_auth_code_flow()
+
+        token_data = await self._get_client_credentials_token()
+
+        if not token_data:
+            errors["base"] = "token_failed"
+            return self.async_show_form(
+                step_id="user",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required(
+                            CONF_API_URL,
+                            default=user_input.get(CONF_API_URL, ""),
+                        ): str,
+                        vol.Required(
+                            CONF_AUTH_URL,
+                            default=user_input.get(CONF_AUTH_URL, ""),
+                        ): str,
+                        vol.Required(
+                            CONF_AUTH_TYPE,
+                            default=user_input.get(
+                                CONF_AUTH_TYPE,
+                                AUTH_TYPE_CLIENT_CRED,
+                            ),
+                        ): vol.In(
+                            {
+                                AUTH_TYPE_CLIENT_CRED: "Client Credentials",
+                                AUTH_TYPE_AUTH_CODE: "Auth Code",
+                            }
+                        ),
+                        vol.Required(
+                            CONF_CLIENT_ID,
+                            default=user_input.get(CONF_CLIENT_ID, ""),
+                        ): str,
+                        vol.Required(CONF_CLIENT_SECRET): str,
+                    }
+                ),
+                errors=errors,
+            )
+
+        return await self._create_buildtrack_entry(token_data)
+
+    async def _start_auth_code_flow(self):
         if not self.hass.data.get(f"{DOMAIN}_callback_registered"):
             self.hass.http.register_view(BuildTrackOAuthCallbackView)
             self.hass.data[f"{DOMAIN}_callback_registered"] = True
@@ -83,43 +161,27 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             base_url = get_url(self.hass, prefer_external=False)
         except NoURLAvailableError:
-            errors["base"] = "ha_url_not_found"
-            return self.async_show_form(
-                step_id="user",
-                data_schema=vol.Schema(
-                    {
-                        vol.Required(CONF_USERNAME, default=user_input.get(CONF_USERNAME, "")): str,
-                        vol.Required(CONF_PASSWORD): str,
-                        vol.Required(CONF_CLIENT_ID, default=user_input.get(CONF_CLIENT_ID, "")): str,
-                        vol.Required(CONF_CLIENT_SECRET): str,
-                    }
-                ),
-                errors=errors,
-            )
+            _LOGGER.exception("Home Assistant URL not found")
+            return self.async_abort(reason="ha_url_not_found")
 
         redirect_uri = f"{base_url.rstrip('/')}/api/buildtrack/oauth/callback"
-
         state = self.flow_id
 
         self.context["oauth_state"] = state
-        self.context[CONF_USERNAME] = user_input[CONF_USERNAME]
-        self.context[CONF_PASSWORD] = user_input[CONF_PASSWORD]
-        self.context[CONF_CLIENT_ID] = user_input[CONF_CLIENT_ID]
-        self.context[CONF_CLIENT_SECRET] = user_input[CONF_CLIENT_SECRET]
         self.context[CONF_REDIRECT_URI] = redirect_uri
 
         params = {
             "scope": SCOPE,
             "state": state,
-            "client_id": user_input[CONF_CLIENT_ID],
+            "client_id": self.context[CONF_CLIENT_ID],
             "redirect_uri": redirect_uri,
             "response_type": "code",
         }
 
-        auth_url = f"{AUTHORIZE_URL}?{urlencode(params)}"
+        auth_url = f"{_authorize_url(self.context[CONF_AUTH_URL])}?{urlencode(params)}"
 
         _LOGGER.warning("BuildTrack redirect_uri: %s", redirect_uri)
-        _LOGGER.warning("Generated BuildTrack authorize URL: %s", auth_url)
+        _LOGGER.warning("BuildTrack authorize URL: %s", auth_url)
 
         return self.async_external_step(
             step_id="auth",
@@ -155,65 +217,36 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_external_step_done(next_step_id="auth_done")
 
     async def async_step_auth_done(self, user_input=None):
-        username = self.context.get(CONF_USERNAME)
-        password = self.context.get(CONF_PASSWORD)
-        client_id = self.context.get(CONF_CLIENT_ID)
-        client_secret = self.context.get(CONF_CLIENT_SECRET)
-        redirect_uri = self.context.get(CONF_REDIRECT_URI)
-        code = self.context.get("auth_code")
-
-        if not all([username, password, client_id, client_secret, redirect_uri, code]):
-            return self.async_abort(reason="missing_callback_data")
-
-        token_data = await self._exchange_code_for_token(
-            username=username,
-            password=password,
-            client_id=client_id,
-            client_secret=client_secret,
-            code=code,
-            redirect_uri=redirect_uri,
-        )
+        token_data = await self._exchange_code_for_token()
 
         if not token_data:
             return self.async_abort(reason="token_exchange_failed")
 
-        await self.async_set_unique_id("buildtrack_oauth")
-        self._abort_if_unique_id_configured()
+        return await self._create_buildtrack_entry(token_data)
 
-        return self.async_create_entry(
-            title="BuildTrack",
-            data={
-                CONF_USERNAME: username,
-                CONF_PASSWORD: password,
-                CONF_CLIENT_ID: client_id,
-                CONF_CLIENT_SECRET: client_secret,
-                CONF_REDIRECT_URI: redirect_uri,
-                "scope": SCOPE,
-                "access_token": token_data.get("access_token"),
-                "refresh_token": token_data.get("refresh_token"),
-                "token_type": token_data.get("token_type"),
-                "expires_in": token_data.get("expires_in"),
-            },
-        )
+    async def _get_client_credentials_token(self):
+        payload = {
+            "grant_type": "client_credentials",
+            "client_id": self.context.get(CONF_CLIENT_ID),
+            "client_secret": self.context.get(CONF_CLIENT_SECRET),
+            "scope": SCOPE,
+        }
 
-    async def _exchange_code_for_token(
-        self,
-        username: str,
-        password: str,
-        client_id: str,
-        client_secret: str,
-        code: str,
-        redirect_uri: str,
-    ):
+        return await self._post_token_request(payload)
+
+    async def _exchange_code_for_token(self):
         payload = {
             "grant_type": "authorization_code",
-            "username": username,
-            "password": password,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "code": code,
-            "redirect_uri": redirect_uri,
+            "client_id": self.context.get(CONF_CLIENT_ID),
+            "client_secret": self.context.get(CONF_CLIENT_SECRET),
+            "code": self.context.get("auth_code"),
+            "redirect_uri": self.context.get(CONF_REDIRECT_URI),
         }
+
+        return await self._post_token_request(payload)
+
+    async def _post_token_request(self, payload):
+        token_url = _token_url(self.context[CONF_AUTH_URL])
 
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
@@ -224,13 +257,15 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         try:
             async with session.post(
-                TOKEN_URL,
+                token_url,
                 data=payload,
                 headers=headers,
             ) as response:
-                response_text = await response.text()
-                _LOGGER.warning("Token response status: %s", response.status)
-                _LOGGER.warning("Token raw response: %s", response_text[:1000])
+                text = await response.text()
+
+                _LOGGER.warning("BuildTrack token URL: %s", token_url)
+                _LOGGER.warning("BuildTrack token status: %s", response.status)
+                _LOGGER.warning("BuildTrack token response: %s", text[:1000])
 
                 if response.status != 200:
                     return None
@@ -238,10 +273,36 @@ class BuildTrackConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data = await response.json(content_type=None)
 
                 if not data.get("access_token"):
+                    _LOGGER.error("BuildTrack token response missing access_token")
                     return None
 
                 return data
 
         except Exception as err:
-            _LOGGER.exception("Token exchange failed: %s", err)
+            _LOGGER.exception("BuildTrack token request failed: %s", err)
             return None
+
+    async def _create_buildtrack_entry(self, token_data):
+        await self.async_set_unique_id("buildtrack")
+        self._abort_if_unique_id_configured()
+
+        data = {
+            CONF_API_URL: self.context.get(CONF_API_URL),
+            CONF_AUTH_URL: self.context.get(CONF_AUTH_URL),
+            CONF_AUTH_TYPE: self.context.get(CONF_AUTH_TYPE),
+            CONF_CLIENT_ID: self.context.get(CONF_CLIENT_ID),
+            CONF_CLIENT_SECRET: self.context.get(CONF_CLIENT_SECRET),
+            "scope": SCOPE,
+            "access_token": token_data.get("access_token"),
+            "refresh_token": token_data.get("refresh_token"),
+            "token_type": token_data.get("token_type"),
+            "expires_in": token_data.get("expires_in"),
+        }
+
+        if self.context.get(CONF_AUTH_TYPE) == AUTH_TYPE_AUTH_CODE:
+            data[CONF_REDIRECT_URI] = self.context.get(CONF_REDIRECT_URI)
+
+        return self.async_create_entry(
+            title="BuildTrack",
+            data=data,
+        )

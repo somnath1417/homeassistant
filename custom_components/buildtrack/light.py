@@ -1,6 +1,6 @@
 import logging
 
-from datetime import timedelta, datetime
+from datetime import datetime
 
 from homeassistant.components.light import (
     LightEntity,
@@ -13,8 +13,6 @@ from homeassistant.helpers import device_registry as dr
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
-
-SCAN_INTERVAL = timedelta(seconds=5)
 
 
 def get_location(device):
@@ -97,6 +95,8 @@ async def async_setup_entry(
 
 class BuildTrackLight(LightEntity):
 
+    should_poll = False
+
     def __init__(self, hass, api, device):
         self._hass = hass
         self._api = api
@@ -178,11 +178,6 @@ class BuildTrackLight(LightEntity):
             self.async_write_ha_state()
 
     async def async_update(self):
-        if self._last_local_change:
-            diff = (datetime.now() - self._last_local_change).total_seconds()
-            if diff < 3:
-                return
-
         data = await self._api.call(
             endpoint="/readDeviceData",
             method="POST",
@@ -214,7 +209,7 @@ class BuildTrackLight(LightEntity):
 
 class BuildTrackDimmer(LightEntity, RestoreEntity):
 
-    should_poll = True
+    should_poll = False
 
     def __init__(self, hass, api, device):
         self._hass = hass
@@ -332,11 +327,6 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
         )
 
     async def async_update(self):
-        if self._last_local_change:
-            diff = (datetime.now() - self._last_local_change).total_seconds()
-            if diff < 3:
-                return
-
         data = await self._api.call(
             endpoint="/readDeviceData",
             method="POST",

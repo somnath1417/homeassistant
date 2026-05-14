@@ -1,8 +1,10 @@
 import logging
+import asyncio
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 
@@ -99,8 +101,9 @@ class BuildTrackRefreshButton(ButtonEntity):
 
         self._device_identifier = f"buildtrack_refresh_{safe_location}"
 
-        self._attr_name = f"BuildTrack Refresh - {location}"
+        self._attr_name = f"Sync Devices - {location}"
         self._attr_unique_id = self._device_identifier
+        self._attr_icon = "mdi:refresh-circle"
 
     @property
     def suggested_area(self):
@@ -113,6 +116,14 @@ class BuildTrackRefreshButton(ButtonEntity):
             "name": f"BuildTrack Refresh - {self._location}",
             "manufacturer": "BuildTrack",
             "model": "Refresh Button",
+        }
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "location": self._location,
+            "device_count": len(self._devices),
+            "action": "Refresh BuildTrack devices",
         }
 
     async def async_added_to_hass(self):
@@ -145,9 +156,37 @@ class BuildTrackRefreshButton(ButtonEntity):
                     },
                 )
 
+                await asyncio.sleep(0.2)
+
             except Exception as err:
                 _LOGGER.warning(
                     "BuildTrack refresh failed for %s | %s",
                     entity_id,
                     err,
                 )
+
+        await self._update_buildtrack_light_entities()
+
+        _LOGGER.warning(
+            "BuildTrack refresh completed for location %s",
+            self._location,
+        )
+
+    async def _update_buildtrack_light_entities(self):
+        entity_registry = er.async_get(self._hass)
+
+        for entity in entity_registry.entities.values():
+            if entity.platform != DOMAIN:
+                continue
+
+            if not entity.entity_id.startswith("light."):
+                continue
+
+            await self._hass.services.async_call(
+                "homeassistant",
+                "update_entity",
+                {
+                    "entity_id": entity.entity_id,
+                },
+                blocking=False,
+            )

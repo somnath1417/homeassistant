@@ -1,8 +1,6 @@
 import asyncio
 import logging
 
-from datetime import timedelta
-
 from homeassistant.components.climate import ClimateEntity
 from homeassistant.components.climate.const import (
     HVACMode,
@@ -10,12 +8,55 @@ from homeassistant.components.climate.const import (
     ClimateEntityFeature,
 )
 from homeassistant.const import UnitOfTemperature
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-SCAN_INTERVAL = timedelta(seconds=5)
+
+def get_location(device):
+    location = device.get("location")
+
+    if location and str(location).strip():
+        return str(location).strip()
+
+    return None
+
+
+async def ensure_area(hass, location):
+    area_registry = ar.async_get(hass)
+
+    area = area_registry.async_get_area_by_name(location)
+
+    if area is None:
+        area = area_registry.async_create(location)
+
+    return area
+
+
+async def assign_device_to_area(hass, device_identifier, location):
+    if not location:
+        return
+
+    area = await ensure_area(hass, location)
+    device_registry = dr.async_get(hass)
+
+    device = device_registry.async_get_device(
+        identifiers={(DOMAIN, device_identifier)}
+    )
+
+    if device and device.area_id != area.id:
+        device_registry.async_update_device(
+            device.id,
+            area_id=area.id,
+        )
+
+        _LOGGER.warning(
+            "BuildTrack climate device assigned to area %s",
+            location,
+        )
 
 
 async def async_setup_entry(hass, entry, async_add_entities, discovery_info=None):
@@ -35,6 +76,8 @@ async def async_setup_entry(hass, entry, async_add_entities, discovery_info=None
 
 class BuildTrackClimate(ClimateEntity):
     """BuildTrack Thermostat Entity."""
+
+    should_poll = False
 
     def __init__(self, hass, api, device):
         self._hass = hass
@@ -71,6 +114,29 @@ class BuildTrackClimate(ClimateEntity):
             ClimateEntityFeature.TARGET_TEMPERATURE
             | ClimateEntityFeature.FAN_MODE
         )
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._entity_id)},
+            "name": self._attr_name,
+            "manufacturer": self._device.get("manufacturer", "BuildTrack"),
+            "model": ", ".join(self._device.get("type", [])),
+        }
+
+    @property
+    def suggested_area(self):
+        return get_location(self._device)
+
+    async def async_added_to_hass(self):
+        location = get_location(self._device)
+
+        if location:
+            await assign_device_to_area(
+                self._hass,
+                self._entity_id,
+                location,
+            )
 
     async def async_set_temperature(self, **kwargs):
         """Handle temperature change from UI."""
@@ -190,7 +256,7 @@ class BuildTrackClimate(ClimateEntity):
             self.async_write_ha_state()
 
     async def async_update(self):
-        """Realtime thermostat update from BuildTrack."""
+        """Manual thermostat update from BuildTrack."""
 
         data = await self._api.call(
             endpoint="/readDeviceData",

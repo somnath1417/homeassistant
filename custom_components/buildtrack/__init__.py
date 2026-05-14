@@ -13,21 +13,18 @@ from .const import (
 )
 from .api import BuildTrackAPI
 
-PLATFORMS = ["light", "scene", "climate", "button"]
+PLATFORMS = ["button", "light", "scene", "climate"]
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up BuildTrack integration."""
     hass.data.setdefault(DOMAIN, {})
     _LOGGER.warning("BuildTrack async_setup loaded")
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up BuildTrack from config entry."""
-
     _LOGGER.warning("===== BuildTrack async_setup_entry started =====")
 
     hass.data.setdefault(DOMAIN, {})
@@ -65,13 +62,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not access_token:
         _LOGGER.error("BuildTrack access_token missing in config entry")
         return False
-
-    _LOGGER.warning("BuildTrack config loaded from config entry")
-    _LOGGER.warning("BuildTrack api_url: %s", api_url)
-    _LOGGER.warning("BuildTrack auth_url: %s", auth_url)
-    _LOGGER.warning("BuildTrack auth_type: %s", auth_type)
-    _LOGGER.warning("BuildTrack redirect_uri: %s", redirect_uri)
-    _LOGGER.warning("BuildTrack access_token available: %s", bool(access_token))
 
     api = BuildTrackAPI(
         hass=hass,
@@ -123,8 +113,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload BuildTrack config entry."""
-
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:

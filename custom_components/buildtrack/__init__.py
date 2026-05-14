@@ -13,7 +13,7 @@ from .const import (
 )
 from .api import BuildTrackAPI
 
-PLATFORMS = ["light", "scene", "climate"]
+PLATFORMS = ["light", "scene", "climate", "button"]
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -7,6 +7,8 @@ from homeassistant.components.light import (
     ColorMode,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN
 
@@ -15,14 +17,55 @@ _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL = timedelta(seconds=5)
 
 
+def get_location(device):
+    location = device.get("location")
+
+    if location and str(location).strip():
+        return str(location).strip()
+
+    return None
+
+
+async def ensure_area(hass, location):
+    area_registry = ar.async_get(hass)
+
+    area = area_registry.async_get_area_by_name(location)
+
+    if area is None:
+        area = area_registry.async_create(location)
+
+    return area
+
+
+async def assign_device_to_area(hass, device_identifier, location):
+    if not location:
+        return
+
+    area = await ensure_area(hass, location)
+    device_registry = dr.async_get(hass)
+
+    device = device_registry.async_get_device(
+        identifiers={(DOMAIN, device_identifier)}
+    )
+
+    if device and device.area_id != area.id:
+        device_registry.async_update_device(
+            device.id,
+            area_id=area.id,
+        )
+
+        _LOGGER.warning(
+            "BuildTrack light device assigned to area %s",
+            location,
+        )
+
+
 async def async_setup_entry(
     hass,
     entry,
     async_add_entities,
     discovery_info=None,
 ):
-    """Set up BuildTrack lights."""
-
     data = hass.data[DOMAIN][entry.entry_id]
 
     devices = data["devices"]
@@ -35,11 +78,19 @@ async def async_setup_entry(
     for device in devices:
         device_types = device.get("type", [])
 
+        _LOGGER.warning(
+            "BuildTrack light check: %s | %s",
+            device.get("entityName"),
+            device_types,
+        )
+
         if "LIGHT DIMMER" in device_types:
             lights.append(BuildTrackDimmer(hass, api, device))
 
         elif "LIGHT" in device_types:
             lights.append(BuildTrackLight(hass, api, device))
+
+    _LOGGER.warning("BuildTrack total lights added: %s", len(lights))
 
     async_add_entities(lights)
 
@@ -62,6 +113,29 @@ class BuildTrackLight(LightEntity):
 
         self._is_on = False
         self._last_local_change = None
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._entity_id)},
+            "name": self._attr_name,
+            "manufacturer": self._device.get("manufacturer", "BuildTrack"),
+            "model": ", ".join(self._device.get("type", [])),
+        }
+
+    @property
+    def suggested_area(self):
+        return get_location(self._device)
+
+    async def async_added_to_hass(self):
+        location = get_location(self._device)
+
+        if location:
+            await assign_device_to_area(
+                self._hass,
+                self._entity_id,
+                location,
+            )
 
     @property
     def is_on(self):
@@ -161,18 +235,21 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
         self._last_local_change = None
 
     @property
-    def is_on(self):
-        return self._is_on
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self._entity_id)},
+            "name": self._attr_name,
+            "manufacturer": self._device.get("manufacturer", "BuildTrack"),
+            "model": ", ".join(self._device.get("type", [])),
+        }
 
     @property
-    def brightness(self):
-        return self._brightness
-
-    @property
-    def available(self):
-        return True
+    def suggested_area(self):
+        return get_location(self._device)
 
     async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+
         last_state = await self.async_get_last_state()
 
         if last_state:
@@ -185,6 +262,27 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
 
             if self._brightness is None:
                 self._brightness = 255
+
+        location = get_location(self._device)
+
+        if location:
+            await assign_device_to_area(
+                self._hass,
+                self._entity_id,
+                location,
+            )
+
+    @property
+    def is_on(self):
+        return self._is_on
+
+    @property
+    def brightness(self):
+        return self._brightness
+
+    @property
+    def available(self):
+        return True
 
     async def async_turn_on(self, **kwargs):
         brightness = kwargs.get("brightness")
@@ -257,9 +355,6 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
         if not data:
             return
 
-        # IMPORTANT:
-        # If response does not contain state/speed,
-        # do not change dimmer state.
         if "state" not in data and "speed" not in data:
             _LOGGER.warning(
                 "DIMMER SKIP UPDATE | No state/speed found | %s | %s",
@@ -274,7 +369,6 @@ class BuildTrackDimmer(LightEntity, RestoreEntity):
         if speed is not None:
             try:
                 speed_int = int(float(speed))
-
                 speed_int = max(0, min(speed_int, 100))
 
                 self._brightness = int((speed_int / 100) * 255)
